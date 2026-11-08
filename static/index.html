@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daylight Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="mark" aria-hidden="true"></span>
+    <div>
+      <h1>Daylight Studio</h1>
+      <p class="sub">bubble diagram → graph → sDA · MLP / XGBoost surrogate</p>
+    </div>
+  </div>
+  <div class="pipeline" aria-label="pipeline">
+    <span>01 boundary</span><i></i><span>02 bubbles</span><i></i><span>03 graph</span><i></i><span>04 window model</span><i></i><span>05 DA map · room · layout</span>
+  </div>
+  <div class="status"><span id="status-dot" class="dot"></span><span id="status-text">loading models…</span></div>
+</header>
+
+<main class="app">
+  <!-- ================================================= left rail -->
+  <aside class="rail">
+    <section>
+      <h2><b>01</b> Boundary</h2>
+      <div class="btn-row">
+        <button data-tool="boundary" class="tool">Draw <kbd>B</kbd></button>
+        <button id="btn-library">Library…</button>
+        <button id="btn-rect-toggle">Rect</button>
+      </div>
+      <div id="rect-form" class="rect-form" hidden>
+        <label>W <input id="rect-w" type="number" min="3" max="25" step="0.1" value="10"> m</label>
+        <label>H <input id="rect-h" type="number" min="3" max="25" step="0.1" value="9"> m</label>
+        <button id="btn-rect">Apply</button>
+      </div>
+      <dl class="meta" id="boundary-meta"></dl>
+      <p class="hint">Click to add vertices (orthogonal; hold <kbd>Alt</kbd> for free angle). Click the first point or press <kbd>Enter</kbd> to close. In Select mode drag an edge to push it.</p>
+    </section>
+
+    <section>
+      <h2><b>02</b> Room bubbles</h2>
+      <div class="palette" id="palette"></div>
+      <div class="btn-row">
+        <button data-tool="room" class="tool">Place <kbd>R</kbd></button>
+        <button data-tool="link" class="tool">Link <kbd>L</kbd></button>
+        <button data-tool="select" class="tool">Select <kbd>V</kbd></button>
+        <button data-tool="erase" class="tool">Delete <kbd>D</kbd></button>
+      </div>
+      <div id="room-editor" class="editor" hidden>
+        <div class="editor-head"><span id="ed-swatch" class="sw"></span><span id="ed-title"></span>
+          <button id="ed-delete" class="ghost" title="Delete (Del)">Delete</button></div>
+        <label class="field">Type <select id="ed-type"></select></label>
+        <label class="field">Bubble radius <input id="ed-r" type="range" min="0.3" max="4" step="0.05"><output id="ed-r-out"></output></label>
+        <div class="field">Windows
+          <div class="seg small" id="ed-win">
+            <button data-v="auto">auto</button><button data-v="N">N</button><button data-v="S">S</button><button data-v="NS">N+S</button><button data-v="-">none</button>
+          </div>
+        </div>
+      </div>
+      <p class="hint">Remove a bubble: Delete tool (<kbd>D</kbd>) and click it, right-click it, press <kbd>Del</kbd> on the selected one, or use × in the Rooms list. The Delete tool also removes links.</p>
+      <p class="hint">Bubble area is read as a share of the boundary area (r² / Σr² × A). Windows are not drawn — the window model predicts them unless fixed here.</p>
+    </section>
+
+    <section>
+      <h2><b>03</b> Model &amp; WWR</h2>
+      <div class="field">Predictor
+        <div class="seg" id="seg-model"><button data-v="XGBoost">XGBoost</button><button data-v="MLP">MLP</button></div>
+      </div>
+      <label class="field slider">WWR south <output id="out-wwr-s"></output>
+        <input id="wwr-s" type="range" min="0.2" max="0.5" step="0.01" value="0.35">
+        <span class="ticks"><span>0.20</span><span>0.50</span></span>
+      </label>
+      <label class="field slider">WWR north <output id="out-wwr-n"></output>
+        <input id="wwr-n" type="range" min="0.2" max="0.35" step="0.01" value="0.27">
+        <span class="ticks"><span>0.20</span><span>0.35</span></span>
+      </label>
+      <button id="btn-sample-params" class="ghost wide" hidden>Use the sample's simulated WWR</button>
+    </section>
+
+    <section>
+      <h2><b>04</b> Display</h2>
+      <label class="check"><input type="checkbox" id="chk-overlay" checked> DA map under bubbles</label>
+      <label class="check"><input type="checkbox" id="chk-bubbles" checked> Bubbles</label>
+      <label class="check"><input type="checkbox" id="chk-labels" checked> Room sDA labels</label>
+      <div class="field">Colour ramp
+        <div class="seg small" id="seg-cmap"><button data-v="grey">grey</button><button data-v="heat">heat</button><button data-v="pass">pass/fail</button></div>
+      </div>
+      <div class="btn-row">
+        <button id="btn-export" class="ghost">Export graph.json</button>
+        <button id="btn-clear" class="ghost">Clear all</button>
+      </div>
+    </section>
+  </aside>
+
+  <!-- ================================================= canvas -->
+  <section class="stage">
+    <div class="stage-bar">
+      <span id="tool-label">Select</span>
+      <span class="sep"></span>
+      <span id="cursor-pos">x — y —</span>
+      <span class="grow"></span>
+      <button id="btn-fit" class="ghost">Fit</button>
+    </div>
+    <div class="canvas-wrap" id="canvas-wrap">
+      <svg id="plan" tabindex="0" aria-label="plan editor"></svg>
+      <div class="north" aria-hidden="true"><svg viewBox="0 0 24 40"><path d="M12 2 L20 30 L12 24 L4 30 Z"/></svg><span>N</span></div>
+      <div id="msg" class="msg" hidden></div>
+    </div>
+    <p class="hint stage-hint" id="stage-hint"></p>
+  </section>
+
+  <!-- ================================================= results -->
+  <aside class="results">
+    <section class="kpi">
+      <div class="kpi-head"><h2>Layout-level sDA</h2><span class="tag" id="model-tag">—</span></div>
+      <div class="kpi-main"><span id="kpi-sda" class="big">—</span><span class="unit">%</span></div>
+      <div class="gauge"><div id="gauge-fill"></div><div id="gauge-truth" class="truth-mark" hidden></div></div>
+      <dl class="meta two">
+        <dt>sDA from DA map</dt><dd id="kpi-sda-map">—</dd>
+        <dt>mean DA (layout model)</dt><dd id="kpi-mean">—</dd>
+        <dt>mean DA (DA map)</dt><dd id="kpi-mean-map">—</dd>
+        <dt>rooms · links</dt><dd id="kpi-graph">—</dd>
+      </dl>
+      <div id="truth-box" class="truth" hidden></div>
+    </section>
+
+    <nav class="tabs" role="tablist">
+      <button data-tab="rooms" class="on">Rooms</button>
+      <button data-tab="map">DA map</button>
+      <button data-tab="graph">Graph</button>
+      <button data-tab="about">Model</button>
+    </nav>
+    <section class="tab" id="tab-rooms"><div id="room-list" class="room-list"></div></section>
+    <section class="tab" id="tab-map" hidden>
+      <div class="seg small" id="seg-mapview"><button data-v="pred">predicted</button><button data-v="truth">simulated</button><button data-v="err">error</button></div>
+      <div class="map-wrap"><canvas id="map-canvas"></canvas><div id="map-hover" class="map-hover"></div></div>
+      <div class="legend"><canvas id="legend" width="256" height="10"></canvas><div class="legend-ticks"><span>0</span><span class="cut">0.498 (sDA cut)</span><span>1</span></div></div>
+      <p class="hint">DA map on the 0.1 m grid (row 0 = north). A cell counts towards sDA when its DA value is above 127/255.</p>
+    </section>
+    <section class="tab" id="tab-graph" hidden><div id="graph-view"></div></section>
+    <section class="tab" id="tab-about" hidden><div id="about"></div></section>
+  </aside>
+</main>
+
+<!-- ================================================= library modal -->
+<dialog id="lib">
+  <div class="lib-head">
+    <h2>Boundary library <span id="lib-count" class="muted"></span></h2>
+    <div class="lib-filters">
+      <input id="lib-q" type="search" placeholder="sample id">
+      <select id="lib-split"><option value="">all splits</option><option>train</option><option>val</option><option>test</option></select>
+      <select id="lib-rooms"><option value="">any rooms</option></select>
+      <button id="lib-close" class="ghost">Close</button>
+    </div>
+  </div>
+  <div id="lib-grid" class="lib-grid"></div>
+  <div class="lib-foot"><button id="lib-prev" class="ghost">←</button><span id="lib-page"></span><button id="lib-next" class="ghost">→</button>
+    <span class="grow"></span><span class="muted">Card = full sample (boundary + bubbles + simulated reference). “outline” = boundary only.</span></div>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

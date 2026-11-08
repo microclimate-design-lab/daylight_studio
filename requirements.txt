@@ -1,0 +1,9 @@
+flask>=3.0
+numpy>=1.26
+opencv-python>=4.9
+xgboost>=3.0
+torch>=2.4
+scikit-learn==1.6.*
+# only for tools/build_data.py
+pandas>=2.0
+openpyxl>=3.1
