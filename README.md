@@ -8,6 +8,8 @@ MLP / XGBoost surrogates return the DA map, room-level sDA and layout-level sDA 
 boundary + bubbles (browser) ─► graph (dataset format) ─► window model ─► DA map · room sDA · layout sDA
 ```
 
+New users: see **[HANDOVER.md](HANDOVER.md)** for installation, a walkthrough, limits and troubleshooting.
+
 ## Run
 
 ```bash
