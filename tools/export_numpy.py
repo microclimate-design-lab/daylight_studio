@@ -35,6 +35,20 @@ def export():
                 acts.append("relu" if "ReLU" in nxt[:1] else "sigmoid" if "Sigmoid" in nxt[:1] else "none")
         np.savez(MODELS / "np" / f"{lvl}_mlp.npz", acts=np.array(acts), mean=sc.mean_, scale=sc.scale_, **arrays)
         print(lvl, "MLP", acts)
+    # XGBoost: binary UBJ, cut to best_iteration (unused trees removed -> same predictions, far less memory;
+    # parsing the 41 MB map_xgb.json alone peaks at ~600 MB)
+    import xgboost as xgb
+    (MODELS / "xgb").mkdir(exist_ok=True)
+    for f in sorted(MODELS.glob("*.json")) + sorted((MODELS / "gnn").glob("*/window_*.json")):
+        b = xgb.Booster()
+        b.load_model(str(f))
+        best = b.attributes().get("best_iteration")
+        if best is not None:
+            b = b[: int(best) + 1]
+        out = MODELS / "xgb" / (f.stem + ".ubj" if f.parent == MODELS else f"{f.parent.name}_{f.stem}.ubj")
+        b.save_model(str(out))
+        print(f.relative_to(MODELS), "->", out.relative_to(MODELS), f"{b.num_boosted_rounds()} trees",
+              f"{out.stat().st_size / 2**20:.1f} MB")
     for folder in sorted((MODELS / "gnn").iterdir()):
         for pt in sorted(folder.glob("*_s*.pt")):
             sd = torch.load(pt, map_location="cpu", weights_only=True)

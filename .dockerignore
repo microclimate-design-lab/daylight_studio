@@ -14,3 +14,6 @@ HANDOVER.md
 models/*.pt
 models/*.pkl
 models/gnn/*/*.pt
+# XGBoost JSON: the image uses the trimmed binary copies in models/xgb/
+models/*.json
+models/gnn/*/window_*.json

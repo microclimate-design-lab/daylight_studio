@@ -56,8 +56,11 @@ class XGB:
     XGBRegressor / XGBClassifier wrappers: uses best_iteration when the model was trained with early stopping."""
 
     def __init__(self, path):
+        path = Path(path)
+        # prefer the compact binary copy from tools/export_numpy.py (trimmed to best_iteration, low load memory)
+        ubj = MODELS / "xgb" / (path.stem + ".ubj" if path.parent == MODELS else f"{path.parent.name}_{path.stem}.ubj")
         self.booster = xgb.Booster()
-        self.booster.load_model(str(path))
+        self.booster.load_model(str(ubj if ubj.exists() else path))
         best = self.booster.attributes().get("best_iteration")
         self.iters = (0, int(best) + 1) if best is not None else (0, 0)
 
