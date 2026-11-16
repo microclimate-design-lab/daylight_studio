@@ -8,6 +8,8 @@ MLP / XGBoost surrogates return the DA map, room-level sDA and layout-level sDA 
 boundary + bubbles (browser) ─► graph (dataset format) ─► window model ─► DA map · room sDA · layout sDA
 ```
 
+**Live demo:** https://daylight-studio.onrender.com (free instance: the first visit after 15 min idle takes about a minute to wake up; each prediction takes ~1 s)
+
 New users: see **[HANDOVER.md](HANDOVER.md)** for installation, a walkthrough, limits and troubleshooting.
 HANDOVER.md was written for the first release (Shanghai, MLP / XGBoost); the GNN models and the Singapore
 dataset follow the same workflow.

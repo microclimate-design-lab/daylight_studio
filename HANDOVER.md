@@ -11,6 +11,11 @@ in about 40 ms:
 The models (MLP and XGBoost) were trained on 1691 simulated layouts from the `daylight_gnn` project.
 They give a fast early-stage estimate and **do not replace a daylight simulation**.
 
+> **Just want to use it?** Open **https://daylight-studio.onrender.com** — nothing to install, skip to section 4.
+> It runs on a free server: after 15 minutes without visitors it sleeps, so the first visit can take about a
+> minute, and each prediction takes about 1 s (vs ~40 ms on your own computer). Sections 1–3 are only needed
+> to run it locally, e.g. for faster response or development.
+
 ---
 
 ## 1. What you need
@@ -22,8 +27,7 @@ They give a fast early-stage estimate and **do not replace a daylight simulation
 | OS | Windows, macOS or Linux |
 | Browser | any recent Chrome, Edge, Firefox or Safari |
 
-The app runs **on your own computer**. There is no public website: the browser page talks to a small Python
-server that you start yourself.
+Running locally: the browser page talks to a small Python server that you start yourself.
 
 ## 2. Install (once)
 
