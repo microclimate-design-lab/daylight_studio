@@ -14,7 +14,7 @@
     <span class="mark" aria-hidden="true"></span>
     <div>
       <h1>Daylight Studio</h1>
-      <p class="sub">bubble diagram → graph → sDA · MLP / XGBoost surrogate</p>
+      <p class="sub">bubble diagram → graph → sDA · MLP / XGBoost / GNN · Shanghai &amp; Singapore</p>
     </div>
   </div>
   <div class="pipeline" aria-label="pipeline">
@@ -57,9 +57,7 @@
         <label class="field">Type <select id="ed-type"></select></label>
         <label class="field">Bubble radius <input id="ed-r" type="range" min="0.3" max="4" step="0.05"><output id="ed-r-out"></output></label>
         <div class="field">Windows
-          <div class="seg small" id="ed-win">
-            <button data-v="auto">auto</button><button data-v="N">N</button><button data-v="S">S</button><button data-v="NS">N+S</button><button data-v="-">none</button>
-          </div>
+          <div class="seg small" id="ed-win"></div>
         </div>
       </div>
       <p class="hint">Remove a bubble: Delete tool (<kbd>D</kbd>) and click it, right-click it, press <kbd>Del</kbd> on the selected one, or use × in the Rooms list. The Delete tool also removes links.</p>
@@ -67,18 +65,14 @@
     </section>
 
     <section>
-      <h2><b>03</b> Model &amp; WWR</h2>
-      <div class="field">Predictor
-        <div class="seg" id="seg-model"><button data-v="XGBoost">XGBoost</button><button data-v="MLP">MLP</button></div>
+      <h2><b>03</b> Region, model &amp; WWR</h2>
+      <div class="field">Region
+        <div class="seg" id="seg-region"></div>
       </div>
-      <label class="field slider">WWR south <output id="out-wwr-s"></output>
-        <input id="wwr-s" type="range" min="0.2" max="0.5" step="0.01" value="0.35">
-        <span class="ticks"><span>0.20</span><span>0.50</span></span>
-      </label>
-      <label class="field slider">WWR north <output id="out-wwr-n"></output>
-        <input id="wwr-n" type="range" min="0.2" max="0.35" step="0.01" value="0.27">
-        <span class="ticks"><span>0.20</span><span>0.35</span></span>
-      </label>
+      <div class="field">Predictor
+        <div class="seg" id="seg-model"></div>
+      </div>
+      <div id="wwr-box"></div>
       <button id="btn-sample-params" class="ghost wide" hidden>Use the sample's simulated WWR</button>
     </section>
 
@@ -140,7 +134,7 @@
       <div class="seg small" id="seg-mapview"><button data-v="pred">predicted</button><button data-v="truth">simulated</button><button data-v="err">error</button></div>
       <div class="map-wrap"><canvas id="map-canvas"></canvas><div id="map-hover" class="map-hover"></div></div>
       <div class="legend"><canvas id="legend" width="256" height="10"></canvas><div class="legend-ticks"><span>0</span><span class="cut">0.498 (sDA cut)</span><span>1</span></div></div>
-      <p class="hint">DA map on the 0.1 m grid (row 0 = north). A cell counts towards sDA when its DA value is above 127/255.</p>
+      <p class="hint" id="map-note">DA map on the 0.1 m grid (row 0 = north). A cell counts towards sDA when its DA value is above 127/255.</p>
     </section>
     <section class="tab" id="tab-graph" hidden><div id="graph-view"></div></section>
     <section class="tab" id="tab-about" hidden><div id="about"></div></section>

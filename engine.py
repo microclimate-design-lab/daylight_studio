@@ -35,13 +35,26 @@ PX = F.PX_PER_M
 SDA_CUT = 127 / 255
 TARGETS = ["sda", "mean_illum"]
 MARGIN = 40  # px around the outline on the raster canvas
-MODEL_NAMES = ("XGBoost", "MLP")
+GEO = ["area", "area_ratio", "x", "y", "d_N", "d_S", "d_E", "d_W"]
+# Singapore layouts have a fourth bedroom (code 13); the Shanghai data has none.
+ALL_TYPES = list(ROOM_TYPES) + [(13, "Master room 3", (190, 126, 204))]
+TYPE_NAME = {i: n for i, n, _ in ALL_TYPES}
+REGIONS = {
+    "shanghai": {"name": "Shanghai", "models": ["XGBoost", "MLP", "GNN"], "sides": "NS",
+                 "wwr": {"S": [0.2, 0.5, 0.35], "N": [0.2, 0.35, 0.275]}, "types": list(range(9)),
+                 "remap": {13: 3}, "library": ""},
+    "singapore": {"name": "Singapore", "models": ["GNN"], "sides": "NSEW",
+                  "wwr": {s: [0.2, 0.45, 0.33] for s in "NSEW"}, "types": [0, 1, 2, 3, 13, 5, 6, 8],
+                  "remap": {4: 0, 7: 3}, "library": "sg_"},
+}
+MODEL_NAMES = tuple(dict.fromkeys(m for r in REGIONS.values() for m in r["models"]))
 
 
 # ------------------------------------------------------------------------------------------- models
 class Models:
     def __init__(self):
         import torch
+        import gnn
         torch.set_num_threads(max(1, (os.cpu_count() or 2) // 2))
         self.torch = torch
         self.lock = threading.Lock()
@@ -50,6 +63,14 @@ class Models:
             c = xgb.XGBClassifier()
             c.load_model(MODELS / f"window_{side}.json")
             self.win[side] = c
+        self.gnn = {region: gnn.Ensemble(MODELS / "gnn" / region) for region in REGIONS}
+        self.gnn_map = {region: gnn.MapEnsemble(MODELS / "gnn" / region) for region in REGIONS
+                        if (MODELS / "gnn" / region / "map_spec.json").exists()}
+        self.sg_win = {}
+        for side in "NSEW":
+            c = xgb.XGBClassifier()
+            c.load_model(MODELS / "gnn" / "singapore" / f"window_{side}.json")
+            self.sg_win[side] = c
         self.xgb = {}
         for name in ["room_xgb_sda", "room_xgb_mean_illum", "unit_xgb_sda", "unit_xgb_mean_illum", "map_xgb"]:
             m = xgb.XGBRegressor()
@@ -147,14 +168,28 @@ def build_graph(outline_m, rooms, links, ori, wwr_s, wwr_n):
 
 # ------------------------------------------------------------------------------------------- predict
 def predict(M, payload):
-    model = payload.get("model", "XGBoost")
-    if model not in MODEL_NAMES:
-        raise ValueError(f"unknown model {model}")
+    region = payload.get("region", "shanghai")
+    if region not in REGIONS:
+        raise ValueError(f"unknown region {region}")
+    reg = REGIONS[region]
+    model = payload.get("model", reg["models"][0])
+    if model not in reg["models"]:
+        raise ValueError(f"model {model} is not available for {reg['name']}")
     ori = int(payload.get("ori", 0))
-    wwr_s = float(np.clip(payload.get("wwr_s", 0.35), 0.2, 0.5))
-    wwr_n = float(np.clip(payload.get("wwr_n", 0.275), 0.2, 0.35))
-    g, mask, bbox, order, bbox_m, warnings = build_graph(
-        payload["outline"], payload["rooms"], payload.get("links", []), ori, wwr_s, wwr_n)
+    wwr = {s: float(np.clip(payload.get(f"wwr_{s.lower()}", d), lo, hi)) for s, (lo, hi, d) in reg["wwr"].items()}
+    rooms, warnings = [], []
+    for r in payload["rooms"]:
+        t = int(r["type"])
+        if t not in reg["types"]:
+            t = reg["remap"].get(t, t)
+            warnings.append(f"{TYPE_NAME.get(int(r['type']), r['type'])} #{r['id']} is not a {reg['name']} room type – "
+                            f"treated as {TYPE_NAME[t]}")
+        rooms.append({**r, "type": t})
+    g, mask, bbox, order, bbox_m, w = build_graph(payload["outline"], rooms, payload.get("links", []), ori, wwr["S"], wwr["N"])
+    warnings += w
+    if model == "GNN":
+        return _predict_gnn(M, region, g, order, bbox_m, wwr, payload.get("windows", {}) or {}, warnings, mask, bbox)
+    wwr_s, wwr_n = wwr["S"], wwr["N"]
     n = g["num_nodes"]
     win_override = payload.get("windows", {}) or {}
 
@@ -162,12 +197,7 @@ def predict(M, payload):
         # ---- windows (not drawn in a bubble diagram -> predicted, unless fixed by the user)
         Xw = F.window_features(g)
         pwin = np.column_stack([M.win[s].predict_proba(Xw)[:, 1] for s in "NS"])
-        win_src = ["model"] * n
-        for k, cid in enumerate(order):
-            o = win_override.get(str(cid))
-            if o and o != "auto":
-                pwin[k] = [float("N" in o), float("S" in o)]
-                win_src[k] = "user"
+        win_src = _override(pwin, "NS", order, win_override)
         for k in range(n):
             g["node_features"][k][9], g["node_features"][k][10] = int(pwin[k, 0] > 0.5), int(pwin[k, 1] > 0.5)
 
@@ -202,8 +232,10 @@ def predict(M, payload):
             "cells": int(sel.sum()),
         })
     vals = np.where(inside, np.round(mp, 3), -1).ravel().tolist()
+    for r, k in zip(rooms_out, range(n)):
+        r["p_win"] = {"N": float(pwin[k, 0]), "S": float(pwin[k, 1])}
     return {
-        "model": model,
+        "model": model, "region": region,
         "inputs": {"ori": ori, "wwr_s": wwr_s, "wwr_n": wwr_n},
         "unit": {"sda": unit[0], "mean_da": unit[1],
                  "sda_map": float((mp[inside] > SDA_CUT).mean()), "mean_da_map": float(mp[inside].mean())},
@@ -213,6 +245,131 @@ def predict(M, payload):
         "graph": _graph_json(g, order),
         "warnings": warnings,
     }
+
+
+def _override(pwin, sides, order, win_override):
+    """User-fixed windows per room ("N", "SE", "-" for none) replace the window-model probabilities."""
+    src = ["model"] * len(order)
+    for k, cid in enumerate(order):
+        o = win_override.get(str(cid))
+        if o and o != "auto":
+            pwin[k] = [float(s in o) for s in sides]
+            src[k] = "user"
+    return src
+
+
+def gnn_graph(region, g, win, wwr, vlt=None):
+    """Studio graph (build_graph) + windows (n x sides, 0/1) -> GNN graph schema (gnn.py)."""
+    n = g["num_nodes"]
+    nf = np.array(g["node_features"], float)
+    node = {name: nf[:, j] for j, name in enumerate(NODE_FEATURE_NAMES[:9])}
+    for k, s in enumerate(REGIONS[region]["sides"]):
+        node[f"win_{s}"] = np.asarray(win, float)[:, k]
+    glob = dict(zip(GRAPH_FEATURE_NAMES, g["graph_features"]), n_rooms=n)
+    if vlt is not None:
+        glob["VLT"] = vlt
+    if region == "singapore":
+        glob.update({f"WWR_{s}": wwr[s] for s in "NSEW"})
+    return {"node": node, "glob": glob, "edge_index": g["edge_index"], "edge_attr": g["edge_attr"]}
+
+
+def gnn_cell_features(region, g, bbox, mask, win, wwr, shape=None):
+    """features.cell_features for the pixel-level GNN. Singapore adds the E / W windows of the cell's room and
+    WWR E / W; Master room 3 is one-hot encoded as Master room 2 here (the room embedding keeps the difference)."""
+    win = np.asarray(win, float)
+    if region == "singapore":
+        g = {**g, "node_features": [[3 if r[0] == 13 else r[0]] + list(r[1:]) for r in g["node_features"]]}
+    X, inside, room = F.cell_features(g, list(bbox), mask, win[:, :2], shape=shape)
+    if region == "singapore":
+        k = np.clip(room.ravel(), 0, None)
+        X = np.c_[X, win[k, 2:4], np.tile([wwr["E"], wwr["W"]], (len(X), 1))].astype(np.float32)
+    return X, inside, room
+
+
+def sg_window_probs(M, g):
+    nf = np.array(g["node_features"], float)
+    n = len(nf)
+    levels = M.gnn["singapore"].spec["categorical"]["room_function"]
+    gf = dict(zip(GRAPH_FEATURE_NAMES, g["graph_features"]))
+    Xw = np.column_stack([(nf[:, 0][:, None] == np.array(levels)[None]).astype(float), nf[:, 1:9]]
+                         + [np.full(n, v) for v in (gf["W_bbox"], gf["H_bbox"], gf["A_boundary"], n)])
+    return np.column_stack([M.sg_win[s].predict_proba(Xw)[:, 1] for s in "NSEW"])
+
+
+def _predict_gnn(M, region, g, order, bbox_m, wwr, win_override, warnings, mask=None, bbox=None):
+    """GATv2 ensemble (gnn.py): room and layout sDA / mean DA from the graph, including the links;
+    DA map from the pixel-level GNN (map_s*.pt) when it has been trained."""
+    reg, ens = REGIONS[region], M.gnn[region]
+    spec = ens.spec
+    n = g["num_nodes"]
+    nf = np.array(g["node_features"], float)
+    sides = reg["sides"]
+    with M.lock:
+        if region == "shanghai":
+            pwin = np.column_stack([M.win[s].predict_proba(F.window_features(g))[:, 1] for s in "NS"])
+        else:
+            pwin = sg_window_probs(M, g)
+        win_src = _override(pwin, sides, order, win_override)
+        win = (pwin > 0.5).astype(float)
+        graph = gnn_graph(region, g, win, wwr, vlt=spec["train_mean"].get("VLT"))  # VLT: no effect in the data
+        room, unit, room_std, unit_std, _ = ens.predict([graph])
+        mp = map_std = None
+        if region in M.gnn_map and mask is not None:
+            X, inside, cell_room = gnn_cell_features(region, g, bbox, mask, win, wwr)
+            cell_room = np.where(inside, cell_room, -1)
+            flat = np.flatnonzero(inside.ravel())
+            mp, map_std = np.full(inside.size, -1.0), np.zeros(inside.size)
+            mean, std = M.gnn_map[region].predict_map(gnn_graph(region, g, win, wwr), X[flat], cell_room.ravel()[flat])
+            mp[flat], map_std[flat] = mean, std
+            mp, map_std = mp.reshape(inside.shape), map_std.reshape(inside.shape)
+        for k in range(n):
+            g["node_features"][k][9], g["node_features"][k][10] = int(win[k, 0]), int(win[k, 1])
+    glob = graph["glob"]
+    for name in ("A_boundary", "n_rooms"):
+        lo, hi = spec["train_range"][name]
+        if not lo <= glob[name] <= hi:
+            label = {"A_boundary": "boundary area", "n_rooms": "room count"}[name]
+            warnings.append(f"{label} {glob[name]:.0f} is outside the {reg['name']} training range {lo:.0f}–{hi:.0f}")
+    if not g["edge_index"][0]:
+        warnings.append("no links drawn – the GNN reads links as shared walls")
+    if region == "singapore" and any(s == "model" for s in win_src):
+        warnings.append("windows of some rooms come from the window model, which is weak for east / west windows – "
+                        "fix them in the room editor for a more reliable sDA")
+    rooms_out = [{
+        "id": cid, "index": k, "type": int(nf[k, 0]), "name": TYPE_NAME[int(nf[k, 0])],
+        "area": nf[k, 1], "area_ratio": nf[k, 2],
+        "p_win": {s: float(pwin[k, j]) for j, s in enumerate(sides)},
+        "p_win_N": float(pwin[k, 0]), "p_win_S": float(pwin[k, 1]), "win_source": win_src[k],
+        "sda": float(room[k, 0]), "mean_da": float(room[k, 1]), "sda_std": float(room_std[k, 0]),
+        **_map_room_stats(mp, cell_room if mp is not None else None, k),
+    } for k, cid in enumerate(order)]
+    out_g = _graph_json(g, order)
+    out_g["node_feature_names"] = NODE_FEATURE_NAMES[:9] + [f"win_{s}" for s in sides]
+    out_g["node_features"] = [row[:9] + [int(pwin[k, j] > 0.5) for j in range(len(sides))]
+                              for k, row in enumerate(out_g["node_features"])]
+    if region == "singapore":
+        out_g["graph_feature_names"] = GRAPH_FEATURE_NAMES[:6] + [f"WWR_{s}" for s in sides]
+        out_g["graph_features"] = out_g["graph_features"][:6] + [round(wwr[s], 2) for s in sides]
+    return {
+        "model": "GNN", "region": region,
+        "inputs": {"ori": 0, **{f"wwr_{s.lower()}": v for s, v in wwr.items()}},
+        "unit": {"sda": float(unit[0, 0]), "mean_da": float(unit[0, 1]), "sda_std": float(unit_std[0, 0]),
+                 "sda_map": float((mp[inside] > SDA_CUT).mean()) if mp is not None else None,
+                 "mean_da_map": float(mp[inside].mean()) if mp is not None else None},
+        "rooms": rooms_out, "graph": out_g, "warnings": warnings,
+        "da_map": None if mp is None else {
+            "rows": mp.shape[0], "cols": mp.shape[1], "cell_m": F.CELL_M, "bbox_m": bbox_m,
+            "values": np.where(inside, np.round(mp, 3), -1).ravel().tolist(),
+            "std": np.where(inside, np.round(map_std, 3), -1).ravel().tolist(), "room": cell_room.ravel().tolist()},
+    }
+
+
+def _map_room_stats(mp, cell_room, k):
+    if mp is None:
+        return {"sda_map": None, "mean_da_map": None, "cells": 0}
+    sel = cell_room == k
+    return {"sda_map": float((mp[sel] > SDA_CUT).mean()) if sel.any() else None,
+            "mean_da_map": float(mp[sel].mean()) if sel.any() else None, "cells": int(sel.sum())}
 
 
 def _graph_json(g, order):
@@ -236,10 +393,10 @@ def _graph_json(g, order):
 class Library:
     """Boundary / sample library packed by tools/build_data.py (data/library.json, samples.json, da_grids.npz)."""
 
-    def __init__(self, data_dir=DATA):
-        self.index = json.load(open(data_dir / "library.json"))
-        self.samples = json.load(open(data_dir / "samples.json"))
-        self.grids = np.load(data_dir / "da_grids.npz")
+    def __init__(self, data_dir=DATA, prefix=""):
+        self.index = json.load(open(data_dir / f"{prefix}library.json"))
+        self.samples = json.load(open(data_dir / f"{prefix}samples.json"))
+        self.grids = np.load(data_dir / f"{prefix}da_grids.npz")
 
     def sample(self, i):
         s = self.samples.get(str(i))

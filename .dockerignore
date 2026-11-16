@@ -1,0 +1,12 @@
+.git
+.gitignore
+.dockerignore
+__pycache__/
+*.pyc
+.venv/
+venv/
+.idea/
+.vscode/
+tools/
+space/
+HANDOVER.md

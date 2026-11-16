@@ -5,15 +5,16 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const SVGNS = "http://www.w3.org/2000/svg";
 const CUT = 127 / 255;
-const DEFAULT_AREA = [30, 14, 12, 12, 12, 7, 5, 9, 3]; // m², used for the default bubble radius
-const SHORT = ["Living", "Master 0", "Master 1", "Master 2", "Dining", "Kitchen", "Bath", "Study", "Storage"];
+const DEFAULT_AREA = { 0: 30, 1: 14, 2: 12, 3: 12, 4: 12, 5: 7, 6: 5, 7: 9, 8: 3, 13: 10 }; // m², default bubble radius
+const SHORT = { 0: "Living", 1: "Master 0", 2: "Master 1", 3: "Master 2", 4: "Dining", 5: "Kitchen", 6: "Bath", 7: "Study", 8: "Storage", 13: "Master 3" };
+const SIDE_NAME = { N: "north", S: "south", E: "east", W: "west" };
 
 const S = {
-  meta: null, types: [],
+  meta: null, types: [], region: "shanghai",
   outline: [], draft: null,
   rooms: [], links: [], windows: {}, nextId: 1,
   sel: null, tool: "select", curType: 0,
-  model: "XGBoost", ori: 0, wwr_s: 0.35, wwr_n: 0.27,
+  model: "XGBoost", ori: 0, wwr: { S: 0.35, N: 0.27, E: 0.33, W: 0.33 },
   view: { s: 40, tx: 0, ty: 0 },
   result: null, sample: null, pristine: false,
   overlay: true, showBubbles: true, labels: true, cmap: "grey", mapView: "pred",
@@ -42,7 +43,9 @@ function segDist(px, py, [x1, y1], [x2, y2]) {
   const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / L));
   return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
 }
-const rgb = (t) => { const c = S.types[t]?.rgb || [200, 200, 200]; return `rgb(${c[0]},${c[1]},${c[2]})`; };
+const typeOf = (t) => S.types.find((x) => x.id === t);
+const REG = () => S.meta.regions.find((r) => r.id === S.region);
+const rgb = (t) => { const c = typeOf(t)?.rgb || [200, 200, 200]; return `rgb(${c[0]},${c[1]},${c[2]})`; };
 const roomById = (id) => S.rooms.find((r) => r.id === id);
 const resRoom = (id) => S.result?.rooms.find((r) => r.id === id);
 const roomLabel = (r) => `${SHORT[r.type]} · #${r.id}`;
@@ -128,7 +131,7 @@ function render() {
     const pts = S.outline.map((p) => W2S(...p).join(",")).join(" ");
     svg.append(el("polygon", { points: pts, class: "outline-fill" }));
     const R = S.result;
-    if (R && S.overlay) {
+    if (R?.da_map && S.overlay) {
       const key = `${R._seq}|${S.cmap}`;
       if (key !== overlayKey) {
         overlayURL = mapImage(R.da_map.values, R.da_map.rows, R.da_map.cols).toDataURL();
@@ -170,7 +173,7 @@ function render() {
     }
   }
   // bubbles
-  const fo = S.overlay && S.result ? 0.38 : 0.85;
+  const fo = S.overlay && S.result?.da_map ? 0.38 : 0.85;
   const sorted = [...S.rooms].sort((a, b) => b.r - a.r);
   if (S.showBubbles) for (const r of sorted) {
     const [X, Y] = W2S(r.x, r.y), inside = S.outline.length >= 3 && inPoly([r.x, r.y], S.outline);
@@ -249,7 +252,7 @@ function setTool(t) {
   if (S.draft && t !== "boundary") S.draft = null;
   S.tool = t; S.linkFrom = null; S.ghost = null;
   $$(".tool").forEach((b) => b.classList.toggle("on", b.dataset.tool === t));
-  $("#tool-label").textContent = { select: "Select", boundary: "Draw boundary", room: `Place · ${S.types[S.curType]?.name || ""}`, link: "Link rooms", erase: "Delete" }[t];
+  $("#tool-label").textContent = { select: "Select", boundary: "Draw boundary", room: `Place · ${typeOf(S.curType)?.name || ""}`, link: "Link rooms", erase: "Delete" }[t];
   $("#stage-hint").textContent = {
     select: "Drag a bubble to move · drag the square handle to resize · drag a boundary edge to push it · drag empty space to pan · wheel to zoom · Del removes the selected bubble",
     boundary: "Click to add vertices (snaps to 0.1 m, orthogonal) · Alt = free angle · click the first point / Enter to close · Esc to cancel",
@@ -394,7 +397,10 @@ document.addEventListener("keydown", (e) => {
   else if (k === "l") setTool("link");
   else if (k === "d") setTool("erase");
   else if (k === "f") fit();
-  else if (/^[1-9]$/.test(k)) { pickType(+k - 1); if (S.sel) { roomById(S.sel).type = +k - 1; syncEditor(); touchGeom(); render(); } }
+  else if (/^[1-9]$/.test(k) && REG().types[+k - 1] != null) {
+    const t = REG().types[+k - 1];
+    pickType(t); if (S.sel) { roomById(S.sel).type = t; syncEditor(); touchGeom(); render(); }
+  }
   else if (k === "enter" && S.draft) closeDraft();
   else if (k === "escape") { S.draft = null; S.ghost = null; S.linkFrom = null; select(null); render(); }
   else if ((k === "delete" || k === "backspace") && S.sel) { deleteRoom(S.sel); e.preventDefault(); }
@@ -416,11 +422,23 @@ function select(id) {
 function syncEditor() {
   const r = roomById(S.sel); if (!r) return;
   $("#ed-swatch").style.background = rgb(r.type);
-  $("#ed-title").textContent = `${S.types[r.type].name} · #${r.id}`;
+  $("#ed-title").textContent = `${typeOf(r.type)?.name} · #${r.id}`;
   $("#ed-type").value = r.type;
   $("#ed-r").value = r.r; $("#ed-r-out").textContent = `${fmt(r.r)} m`;
   const w = S.windows[r.id] || "auto";
-  $$("#ed-win button").forEach((b) => b.classList.toggle("on", b.dataset.v === w));
+  $$("#ed-win button").forEach((b) => b.classList.toggle("on",
+    b.dataset.v === w || (b.dataset.v.length === 1 && w !== "auto" && w !== "-" && w.includes(b.dataset.v))));
+}
+/* Windows per room: "auto" (window model), "-" (none) or the fixed sides, e.g. "NE". */
+function toggleWindow(v) {
+  const cur = S.windows[S.sel] || "auto";
+  if (v === "auto" || v === "-") S.windows[S.sel] = v;
+  else {
+    const set = new Set(cur === "auto" || cur === "-" ? [] : cur);
+    set.has(v) ? set.delete(v) : set.add(v);
+    S.windows[S.sel] = REG().sides.split("").filter((s) => set.has(s)).join("") || "-";
+  }
+  syncEditor(); schedule(0);
 }
 function pickType(t) {
   S.curType = t;
@@ -441,7 +459,8 @@ async function runPredict() {
   const my = ++seq;
   status("busy", "predicting…");
   const body = {
-    model: S.model, ori: 0, wwr_s: S.wwr_s, wwr_n: S.wwr_n, outline: S.outline,
+    region: S.region, model: S.model, ori: 0, outline: S.outline,
+    ...Object.fromEntries(REG().sides.split("").map((s) => [`wwr_${s.toLowerCase()}`, S.wwr[s]])),
     rooms: S.rooms.map(({ id, type, x, y, r }) => ({ id, type, x, y, r })), links: S.links,
     windows: Object.fromEntries(Object.entries(S.windows).filter(([, v]) => v !== "auto")),
   };
@@ -462,33 +481,39 @@ async function runPredict() {
 function clearResult() { S.result = null; renderResults(); render(); }
 
 /* ================================================================ results panel */
+const sampleWWR = (p) => REG().sides.split("").every((s) => p[`wwr_${s.toLowerCase()}`] != null && Math.abs(p[`wwr_${s.toLowerCase()}`] - S.wwr[s]) < 0.005);
+const wwrText = (p) => REG().sides.split("").map((s) => `WWR<sub>${s}</sub> ${fmt(p[`wwr_${s.toLowerCase()}`])}`).join(", ");
 function truthActive() {
   const sm = S.sample;
-  return sm && S.pristine && sm.params.ori === 0 && Math.abs(sm.params.wwr_s - S.wwr_s) < 0.005 && Math.abs(sm.params.wwr_n - S.wwr_n) < 0.005;
+  return sm && S.pristine && sm.region === S.region && sm.params.ori === 0 && sampleWWR(sm.params);
 }
 function renderResults() {
   const R = S.result;
-  $("#model-tag").textContent = R ? R.model : S.model;
+  $("#model-tag").textContent = R ? `${R.model} · ${REG().name}` : S.model;
   $("#kpi-sda").textContent = R ? pct(R.unit.sda) : "—";
   $("#gauge-fill").style.width = R ? `${R.unit.sda * 100}%` : "0";
-  $("#kpi-sda-map").textContent = R ? `${pct(R.unit.sda_map)} %` : "—";
-  $("#kpi-mean").textContent = R ? fmt(R.unit.mean_da, 3) : "—";
+  $("#kpi-sda-map").textContent = R ? (R.unit.sda_map == null ? "— (GNN: no map)" : `${pct(R.unit.sda_map)} %`) : "—";
+  $("#kpi-mean").textContent = R ? fmt(R.unit.mean_da, 3) + (R.unit.sda_std != null ? ` · sDA ±${pct(R.unit.sda_std)} pt over 5 seeds` : "") : "—";
   $("#kpi-mean-map").textContent = R ? fmt(R.unit.mean_da_map, 3) : "—";
   $("#kpi-graph").textContent = R ? `${R.graph.node_features.length} · ${R.graph.edge_index[0].length / 2}` : "—";
 
   const tb = $("#truth-box"), gm = $("#gauge-truth"), sm = S.sample;
-  $("#btn-sample-params").hidden = !(sm && S.pristine && sm.params.ori === 0) || truthActive();
-  if (sm && S.pristine) {
+  $("#btn-sample-params").hidden = !(sm && S.pristine && sm.params.ori === 0 && sm.region === S.region) || truthActive();
+  if (sm && S.pristine && sm.region !== S.region) {
+    tb.hidden = false; gm.hidden = true;
+    tb.innerHTML = `Sample <b>#${sm.id}</b> comes from the ${sm.region === "singapore" ? "Singapore" : "Shanghai"} library; its simulation is not shown for a ${REG().name} model.`;
+  } else if (sm && S.pristine) {
     tb.hidden = false;
     if (truthActive() && R) {
       const e = R.unit.sda - sm.truth.sda;
-      tb.innerHTML = `Sample <b>#${sm.id}</b> (${sm.split}) · simulated sDA <b>${pct(sm.truth.sda)} %</b> · error <span class="${Math.abs(e) > 0.05 ? "err" : ""}">${e >= 0 ? "+" : ""}${pct(e)} pt</span>`;
+      tb.innerHTML = `Sample <b>#${sm.id}</b> (${sm.split}) · simulated sDA <b>${pct(sm.truth.sda)} %</b> · error <span class="${Math.abs(e) > 0.05 ? "err" : ""}">${e >= 0 ? "+" : ""}${pct(e)} pt</span>`
+        + (S.region === "singapore" ? `<br><span class="muted">windows fixed to the plan's windows</span>` : "");
       gm.hidden = false; gm.style.left = `calc(${sm.truth.sda * 100}% - 1px)`;
     } else if (sm.params.ori !== 0) {
       tb.innerHTML = `Sample <b>#${sm.id}</b> (${sm.split}) was simulated rotated ${sm.params.ori === 1 ? "30° E" : "30° W"}; orientation is fixed to 0° here, so no simulated reference is shown.`;
       gm.hidden = true;
     } else {
-      tb.innerHTML = `Sample <b>#${sm.id}</b> (${sm.split}) was simulated at WWR<sub>S</sub> ${fmt(sm.params.wwr_s)}, WWR<sub>N</sub> ${fmt(sm.params.wwr_n)} — match these to compare with the simulation.`;
+      tb.innerHTML = `Sample <b>#${sm.id}</b> (${sm.split}) was simulated at ${wwrText(sm.params)} — match these to compare with the simulation.`;
       gm.hidden = true;
     }
   } else { tb.hidden = true; gm.hidden = true; }
@@ -501,13 +526,14 @@ function renderRooms() {
   const rows = [...S.rooms].sort((a, b) => a.type - b.type || a.id - b.id).map((r) => {
     const q = R?.rooms.find((x) => x.id === r.id);
     const sm = ta ? S.sample.rooms.find((x) => x.id === r.id) : null;
-    const win = q ? `${q.win_source === "user" ? "fixed" : "p"} N ${fmt(q.p_win_N)} · S ${fmt(q.p_win_S)}` : "";
+    const win = q ? `${q.win_source === "user" ? "fixed" : "p"} ${REG().sides.split("").filter((s) => q.p_win?.[s] != null).map((s) => `${s} ${fmt(q.p_win[s])}`).join(" · ")}` : "";
+    const mapPart = q?.sda_map !== undefined && R?.da_map ? `<span>map <b>${q.sda_map == null ? "—" : pct(q.sda_map) + "%"}</b></span>` : q?.sda_std != null ? `<span>± <b>${pct(q.sda_std)}</b> pt</span>` : "";
     return `<div class="room-row${S.sel === r.id ? " sel" : ""}" data-id="${r.id}">
       <span class="sw" style="background:${rgb(r.type)}"></span>
-      <span class="nm">${S.types[r.type].name}<small>#${r.id}${q ? ` · ${fmt(q.area, 1)} m²` : ""}</small></span>
+      <span class="nm">${typeOf(r.type)?.name}<small>#${r.id}${q ? ` · ${fmt(q.area, 1)} m²` : ""}${q && q.type !== r.type ? ` · as ${SHORT[q.type]}` : ""}</small></span>
       <span class="val">${q ? pct(q.sda) : "—"}<small style="font-size:10px;color:var(--ink-3)">%</small><button class="del" data-del="${r.id}" title="Delete bubble #${r.id}" aria-label="Delete bubble #${r.id}">×</button></span>
       <span class="bar"><em></em><span style="width:${q ? q.sda * 100 : 0}%"></span>${sm?.true_sda != null ? `<i style="left:calc(${sm.true_sda * 100}% - 1px)"></i>` : ""}</span>
-      <span class="sub2">${q ? `<span>map <b>${q.sda_map == null ? "—" : pct(q.sda_map) + "%"}</b></span><span>mean DA <b>${fmt(q.mean_da, 3)}</b></span><span>${win}</span>` : "<span>outside boundary</span>"}${sm?.true_sda != null ? `<span>sim <b style="color:var(--warn)">${pct(sm.true_sda)}%</b></span>` : ""}</span>
+      <span class="sub2">${q ? `${mapPart}<span>mean DA <b>${fmt(q.mean_da, 3)}</b></span><span>${win}</span>` : "<span>outside boundary</span>"}${sm?.true_sda != null ? `<span>sim <b style="color:var(--warn)">${pct(sm.true_sda)}%</b></span>` : ""}</span>
     </div>`;
   });
   box.innerHTML = rows.join("");
@@ -519,25 +545,35 @@ function renderRooms() {
 function renderMap() {
   drawLegend();
   const c = $("#map-canvas"), R = S.result;
-  const truthOk = S.sample && S.pristine && R && S.sample.truth.rows === R.da_map.rows && S.sample.truth.cols === R.da_map.cols;
-  $$("#seg-mapview button").forEach((b) => { b.disabled = b.dataset.v !== "pred" && !truthOk; b.classList.toggle("on", b.dataset.v === S.mapView); });
-  if (!R) { c.width = 1; c.height = 1; return; }
-  let mode = S.mapView; if (!truthOk) mode = "pred";
-  const vals = mode === "truth" ? S.sample.truth.values : R.da_map.values;
-  const img = mapImage(vals, R.da_map.rows, R.da_map.cols, mode === "err" ? "err" : "pred", mode === "err" ? S.sample.truth.values : null);
-  const k = Math.max(2, Math.floor(Math.min(340 / R.da_map.cols, 420 / R.da_map.rows)));
-  c.width = R.da_map.cols * k; c.height = R.da_map.rows * k;
+  const sim = S.sample && S.pristine && S.sample.region === S.region ? S.sample.truth : null;
+  const gnnOnly = R && !R.da_map;
+  $("#map-note").textContent = gnnOnly
+    ? `The GNN predicts room and layout values only, not a DA map.${sim ? " Showing the simulated DA map of the sample." : ""}`
+    : "DA map on the 0.1 m grid (row 0 = north). A cell counts towards sDA when its DA value is above 127/255.";
+  const truthOk = sim && R && (gnnOnly || (sim.rows === R.da_map.rows && sim.cols === R.da_map.cols));
+  $$("#seg-mapview button").forEach((b) => {
+    b.disabled = gnnOnly ? b.dataset.v !== "truth" || !sim : b.dataset.v !== "pred" && !truthOk;
+    b.classList.toggle("on", b.dataset.v === (gnnOnly ? "truth" : S.mapView));
+  });
+  if (!R || (gnnOnly && !sim)) { c.width = 1; c.height = 1; c._k = 0; return; }
+  const grid = gnnOnly ? sim : R.da_map;
+  let mode = gnnOnly ? "truth" : S.mapView; if (!truthOk) mode = "pred";
+  const vals = mode === "truth" ? sim.values : R.da_map.values;
+  const img = mapImage(vals, grid.rows, grid.cols, mode === "err" ? "err" : "pred", mode === "err" ? sim.values : null);
+  const k = Math.max(2, Math.floor(Math.min(340 / grid.cols, 420 / grid.rows)));
+  c.width = grid.cols * k; c.height = grid.rows * k;
   const ctx = c.getContext("2d"); ctx.imageSmoothingEnabled = false; ctx.drawImage(img, 0, 0, c.width, c.height);
   c._k = k; c._mode = mode;
 }
 $("#map-canvas").addEventListener("mousemove", (e) => {
-  const c = e.currentTarget, R = S.result; if (!R || !c._k) return;
+  const c = e.currentTarget, R = S.result; if (!R?.da_map || !c._k) return;
   const b = c.getBoundingClientRect(), col = Math.floor(((e.clientX - b.left) / b.width) * R.da_map.cols), row = Math.floor(((e.clientY - b.top) / b.height) * R.da_map.rows);
   const i = row * R.da_map.cols + col, v = R.da_map.values[i];
   if (v == null || v < 0) { $("#map-hover").textContent = ""; return; }
   const ri = R.da_map.room[i], rm = R.rooms.find((x) => x.index === ri);
   const t = S.sample && c._mode !== "pred" ? S.sample.truth.values[i] : null;
-  $("#map-hover").textContent = `r${row} c${col} · pred ${fmt(v, 3)}${t != null && t >= 0 ? ` · sim ${fmt(t, 3)}` : ""} · ${rm ? SHORT[rm.type] + " #" + rm.id : "—"}`;
+  const sd = R.da_map.std?.[i];
+  $("#map-hover").textContent = `r${row} c${col} · pred ${fmt(v, 3)}${sd != null && sd >= 0 ? ` ±${fmt(sd, 3)}` : ""}${t != null && t >= 0 ? ` · sim ${fmt(t, 3)}` : ""} · ${rm ? SHORT[rm.type] + " #" + rm.id : "—"}`;
 });
 $("#map-canvas").addEventListener("mouseleave", () => { $("#map-hover").textContent = ""; });
 
@@ -546,7 +582,7 @@ function renderGraph() {
   if (!R) { box.innerHTML = `<p class="empty">The graph appears once a boundary and at least one bubble exist.</p>`; return; }
   const G = R.graph;
   const gf = G.graph_feature_names.map((n, i) => `<tr><td>${n}</td><td>${G.graph_features[i] == null ? "— (not used)" : fmt(G.graph_features[i], n === "ORI" ? 0 : 3)}</td></tr>`).join("");
-  const head = ["#", "room", "area", "ratio", "x", "y", "d_N", "d_S", "d_E", "d_W", "win_N", "win_S"];
+  const head = ["#", "room", "area", "ratio", "x", "y", "d_N", "d_S", "d_E", "d_W", ...G.node_feature_names.slice(9)];
   const nf = G.node_features.map((r, k) => `<tr><td>${k}</td><td><span class="sw" style="background:${rgb(r[0])};width:9px;height:9px"></span> ${SHORT[r[0]]} #${G.order[k]}</td>${r.slice(1).map((v, j) => `<td>${j >= 8 ? v : fmt(v, j === 0 ? 1 : 2)}</td>`).join("")}</tr>`).join("");
   const E = []; for (let i = 0; i < G.edge_index[0].length; i += 2) { const a = G.edge_index[0][i], b = G.edge_index[1][i]; E.push(`<tr><td>${a} → ${b}</td><td>${SHORT[G.node_features[a][0]]} – ${SHORT[G.node_features[b][0]]}</td><td>${fmt(G.edge_attr[i][0])}</td><td>${fmt(G.edge_attr[i][1])}</td></tr>`); }
   box.innerHTML = `
@@ -554,18 +590,32 @@ function renderGraph() {
     <h3>node_features <span class="muted">(${G.node_features.length} nodes · win_* from the window model)</span></h3>
     <div class="scroll-x"><table class="gt"><thead><tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr></thead><tbody>${nf}</tbody></table></div>
     <h3>edges <span class="muted">(${E.length} undirected · stored both ways)</span></h3>
-    ${E.length ? `<table class="gt"><thead><tr><th>i → j</th><th>rooms</th><th>dx</th><th>dy</th></tr></thead><tbody>${E.join("")}</tbody></table>` : `<p class="empty">No links drawn. The MLP / XGBoost surrogates do not read edges; they are kept for the graph export (GNN).</p>`}`;
+    ${E.length ? `<table class="gt"><thead><tr><th>i → j</th><th>rooms</th><th>dx</th><th>dy</th></tr></thead><tbody>${E.join("")}</tbody></table>` : `<p class="empty">No links drawn. The MLP / XGBoost surrogates do not read edges; the GNN reads every link as a shared wall.</p>`}`;
+}
+function mapMetrics() {
+  const rows = S.meta.map_metrics?.[S.region];
+  if (!rows?.length) return "";
+  const tr = rows.map((r) => `<tr><td>${r.model}</td><td>${r.windows === "plan" ? "plan" : "predicted"}</td><td>${fmt(r.map_R2, 3)}</td><td>${fmt(r.map_MAE, 3)}</td><td>${fmt(r.cell_sDA_accuracy, 3)}</td><td>${fmt(r.layout_sDA_from_map_R2, 3)}</td><td>${fmt(r.layout_sDA_from_map_MAE, 3)}</td></tr>`).join("");
+  return `<h3>DA map, test layouts · ${REG().name}</h3>
+    <table class="gt"><thead><tr><th>model</th><th>windows</th><th>map R²</th><th>map MAE</th><th>cell pass/fail acc.</th><th>layout sDA from map R²</th><th>MAE</th></tr></thead><tbody>${tr}</tbody></table>
+    <p class="muted">Same test cells and inputs for every model, built from the library bubbles as in this app; “plan” = the sample's real windows, “predicted” = the window model.</p>`;
 }
 function renderAbout() {
   const m = S.meta.metrics || {};
-  const row = (k) => `<tr><td>${k}</td><td>${fmt(m[k]?.unit_sda_R2, 3)}</td><td>${fmt(m[k]?.room_sda_R2, 3)}</td><td>${fmt(m[k]?.map_R2, 3)}</td><td>${fmt(m[k]?.unit_sda_MAE, 3)}</td></tr>`;
+  const key = (k) => (k === "GNN" ? `${S.region}:GNN` : k);
+  const row = (k) => `<tr><td>${k}</td><td>${fmt(m[key(k)]?.unit_sda_R2, 3)}</td><td>${fmt(m[key(k)]?.room_sda_R2, 3)}</td><td>${fmt(m[key(k)]?.map_R2, 3)}</td><td>${fmt(m[key(k)]?.unit_sda_MAE, 3)}</td></tr>`;
+  const g = m[`${S.region}:GNN`];
+  const auc = g?.window_auc && Object.keys(g.window_auc).length ? ` Window classifiers for the Singapore GNN, test-room AUC: ${Object.entries(g.window_auc).map(([s, v]) => `${s} ${fmt(v, 2)}`).join(", ")}.` : "";
   $("#about").innerHTML = `<div class="about">
-    <h3>Test-set performance</h3>
-    <table class="gt"><thead><tr><th>model</th><th>layout sDA R²</th><th>room sDA R²</th><th>DA map R²</th><th>layout MAE</th></tr></thead><tbody>${S.meta.models.map(row).join("")}</tbody></table>
+    <h3>Test-set performance · ${REG().name}</h3>
+    <table class="gt"><thead><tr><th>model</th><th>layout sDA R²</th><th>room sDA R²</th><th>DA map R²</th><th>layout MAE</th></tr></thead><tbody>${REG().models.map(row).join("")}</tbody></table>
+    ${g ? `<p class="muted">GNN = GATv2, mean of 5 seeds, re-run on ${g.test_layouts} test layouts / ${g.test_rooms} rooms of the ${REG().name} dataset graphs (not drawn bubbles). Single-seed mean: layout R² ${fmt(g.seed_mean.layout_sda_r2, 3)}, MAE ${fmt(g.seed_mean.layout_sda_mae, 3)}.${auc}</p>` : ""}
     <h3>Pipeline</h3>
     <p>The drawn boundary is rasterised at 199.735 px / m and every bubble becomes a node with the dataset features (type, area from r²/Σr² × 1.0017 × A, relative position, N/S/E/W depth to the outline). Window presence per room is predicted by two XGBoost classifiers (AUC ≈ 0.98) unless fixed in the room editor.</p>
     <p><b>Room</b> and <b>layout</b> sDA come from dedicated regressors; the <b>DA map</b> is predicted cell by cell on a 0.1 m grid, and “from map” values count cells above 127/255.</p>
-    <p>Valid design range of the training data: WWR<sub>S</sub> 0.20–0.50, WWR<sub>N</sub> 0.20–0.35, 1–10 rooms, residential units. Orientation is fixed to 0° (south-facing) for the models' ORI input.</p>
+    <p>The <b>GNN</b> (GATv2) reads the same nodes plus every link as a shared wall and predicts room and layout sDA directly. Its <b>DA map</b> comes from a pixel-level GNN: the embedding of the room each 0.1 m cell belongs to, plus the cell's own features, goes through a cell decoder (mean of the seeds; hover shows the seed spread). The Shanghai GNN uses windows N/S from the window model; the Singapore GNN uses windows on all four sides and four WWRs.</p>
+    ${mapMetrics()}
+    <p>Valid design range of the training data: Shanghai WWR<sub>S</sub> 0.20–0.50, WWR<sub>N</sub> 0.20–0.35, 3–7 rooms, 44–112 m²; Singapore (HDB, 82 training layouts) WWR 0.20–0.45 on each side, Living / Master 0–3 / Kitchen / Bath / Storage. Orientation is fixed to 0° (north up).</p>
     <p class="muted" style="font-family:var(--mono);font-size:10.5px">models: ${S.meta.models_dir}</p></div>`;
 }
 
@@ -576,7 +626,7 @@ async function openLibrary() {
   $("#lib").showModal();
   if (!LIB) {
     $("#lib-grid").innerHTML = `<p class="empty" style="padding:20px">loading…</p>`;
-    LIB = await (await fetch("/api/library")).json();
+    LIB = await (await fetch(`/api/library?region=${S.region}`)).json();
     const ns = [...new Set(LIB.map((x) => x.n_rooms).filter(Boolean))].sort((a, b) => a - b);
     $("#lib-rooms").innerHTML = `<option value="">any rooms</option>` + ns.map((n) => `<option>${n}</option>`).join("");
   }
@@ -613,17 +663,24 @@ $("#lib-grid").addEventListener("click", async (e) => {
 });
 async function loadSample(id) {
   status("busy", `loading sample #${id}…`);
-  const s = await (await fetch(`/api/library/${id}`)).json();
+  const s = await (await fetch(`/api/library/${id}?region=${S.region}`)).json();
   s.split = LIB?.find((x) => x.id === id)?.split || "";
+  s.region = S.region;
   S.outline = s.outline; S.rooms = s.rooms.map(({ id, type, x, y, r }) => ({ id, type, x, y, r }));
-  S.links = s.links; S.windows = {}; S.nextId = Math.max(0, ...S.rooms.map((r) => r.id)) + 1;
+  // Singapore: the window classifiers are weak on E/W (layout MAE 10.9 vs 7.4 pt with the plan's windows), so
+  // library samples start with their real windows fixed; set a room to "auto" to use the window model.
+  S.links = s.links; S.windows = S.region === "singapore" ? Object.fromEntries(s.rooms.map((r) => [r.id, r.true_win || "-"])) : {};
+  S.nextId = Math.max(0, ...S.rooms.map((r) => r.id)) + 1;
   S.sample = s; S.pristine = true; S.sel = null; $("#room-editor").hidden = true;
   setParams(s.params);
   updateBoundaryMeta(); fit(); schedule(0);
 }
 function setParams(p) {
-  S.wwr_s = Math.min(0.5, Math.max(0.2, p.wwr_s)); S.wwr_n = Math.min(0.35, Math.max(0.2, p.wwr_n));
-  $("#wwr-s").value = S.wwr_s; $("#wwr-n").value = S.wwr_n; syncParamUI();
+  for (const [s, [lo, hi]] of Object.entries(REG().wwr)) {
+    const v = p[`wwr_${s.toLowerCase()}`];
+    if (v != null) S.wwr[s] = Math.min(hi, Math.max(lo, v));
+  }
+  renderRegion();
 }
 ["#lib-q", "#lib-split", "#lib-rooms"].forEach((s) => $(s).addEventListener("input", () => { libPage = 0; renderLib(); }));
 $("#lib-prev").onclick = () => { libPage = Math.max(0, libPage - 1); renderLib(); };
@@ -639,25 +696,51 @@ function updateBoundaryMeta() {
     <dt>perimeter</dt><dd>${fmt(P, 1)} m</dd><dt>compactness</dt><dd>${fmt((4 * Math.PI * A) / (P * P), 3)}</dd><dt>vertices</dt><dd>${o.length}</dd>`;
 }
 function syncParamUI() {
-  $("#out-wwr-s").textContent = S.wwr_s.toFixed(2);
-  $("#out-wwr-n").textContent = S.wwr_n.toFixed(2);
+  for (const s of REG().sides) { const o = $(`#out-wwr-${s}`); if (o) o.textContent = S.wwr[s].toFixed(2); }
+  $$("#seg-region button").forEach((b) => b.classList.toggle("on", b.dataset.v === S.region));
   $$("#seg-model button").forEach((b) => b.classList.toggle("on", b.dataset.v === S.model));
   $$("#seg-cmap button").forEach((b) => b.classList.toggle("on", b.dataset.v === S.cmap));
 }
-function wire() {
-  $("#palette").innerHTML = S.types.map((t) => `<button data-t="${t.id}"><span class="sw" style="background:rgb(${t.rgb})"></span>${t.name}<kbd style="margin-left:auto">${t.id + 1}</kbd></button>`).join("");
+/* Region-dependent controls: predictors, WWR sliders, room palette, window buttons. */
+function renderRegion() {
+  const reg = REG();
+  if (!reg.models.includes(S.model)) S.model = reg.models[0];
+  $("#seg-model").innerHTML = reg.models.map((m) => `<button data-v="${m}">${m}</button>`).join("");
+  $$("#seg-model button").forEach((b) => b.addEventListener("click", () => { S.model = b.dataset.v; syncParamUI(); renderResults(); schedule(0); }));
+  $("#wwr-box").innerHTML = reg.sides.split("").map((s) => [s, reg.wwr[s]]).map(([s, [lo, hi]]) => `<label class="field slider">WWR ${SIDE_NAME[s]} <output id="out-wwr-${s}"></output>
+      <input data-side="${s}" type="range" min="${lo}" max="${hi}" step="0.01" value="${S.wwr[s]}">
+      <span class="ticks"><span>${lo.toFixed(2)}</span><span>${hi.toFixed(2)}</span></span></label>`).join("");
+  $$("#wwr-box input").forEach((i) => (i.oninput = (e) => { S.wwr[i.dataset.side] = +(+e.target.value).toFixed(2); syncParamUI(); schedule(40); }));
+  const types = reg.types.map(typeOf);
+  $("#palette").innerHTML = types.map((t, k) => `<button data-t="${t.id}"><span class="sw" style="background:rgb(${t.rgb})"></span>${t.name}<kbd style="margin-left:auto">${k + 1}</kbd></button>`).join("");
   $$("#palette button").forEach((b) => b.addEventListener("click", () => { pickType(+b.dataset.t); setTool("room"); }));
-  $("#ed-type").innerHTML = S.types.map((t) => `<option value="${t.id}">${t.name}</option>`).join("");
+  $("#ed-type").innerHTML = types.map((t) => `<option value="${t.id}">${t.name}</option>`).join("");
+  $("#ed-win").innerHTML = ["auto", ...reg.sides, "-"].map((v) => `<button data-v="${v}">${v === "-" ? "none" : v}</button>`).join("");
+  $$("#ed-win button").forEach((b) => b.addEventListener("click", () => toggleWindow(b.dataset.v)));
+  for (const [id, w] of Object.entries(S.windows)) {               // drop sides the region does not have
+    if (w !== "auto" && w !== "-") S.windows[id] = w.split("").filter((s) => reg.sides.includes(s)).join("") || "-";
+  }
+  if (!reg.types.includes(S.curType)) S.curType = reg.types[0];
+  pickType(S.curType); syncParamUI(); syncEditor(); renderAbout();
+}
+async function setRegion(region) {
+  if (region === S.region) return;
+  const keep = !(S.sample && S.pristine);                          // a drawn / edited design stays; an unchanged sample is swapped
+  S.region = region; LIB = null; $("#lib-q").value = ""; $("#lib-split").value = ""; $("#lib-rooms").value = "";
+  renderRegion();
+  if (keep) { schedule(0); return; }
+  LIB = await (await fetch(`/api/library?region=${region}`)).json();
+  loadSample((LIB.find((x) => x.split === "test") || LIB[0]).id);
+}
+function wire() {
+  $("#seg-region").innerHTML = S.meta.regions.map((r) => `<button data-v="${r.id}" title="${r.library_size} library samples · ${r.models.join(" / ")}">${r.name}</button>`).join("");
+  $$("#seg-region button").forEach((b) => b.addEventListener("click", () => setRegion(b.dataset.v)));
   $("#ed-type").onchange = (e) => { roomById(S.sel).type = +e.target.value; syncEditor(); render(); touchGeom(); };
   $("#ed-r").oninput = (e) => { roomById(S.sel).r = +e.target.value; syncEditor(); render(); touchGeom(); };
   $("#ed-delete").onclick = () => deleteRoom(S.sel);
-  $$("#ed-win button").forEach((b) => b.addEventListener("click", () => { S.windows[S.sel] = b.dataset.v; syncEditor(); schedule(0); }));
   $$(".tool").forEach((b) => b.addEventListener("click", () => setTool(b.dataset.tool)));
-  $$("#seg-model button").forEach((b) => b.addEventListener("click", () => { S.model = b.dataset.v; syncParamUI(); schedule(0); }));
   $$("#seg-cmap button").forEach((b) => b.addEventListener("click", () => { S.cmap = b.dataset.v; syncParamUI(); overlayKey = ""; render(); renderMap(); }));
   $$("#seg-mapview button").forEach((b) => b.addEventListener("click", () => { S.mapView = b.dataset.v; renderMap(); }));
-  $("#wwr-s").oninput = (e) => { S.wwr_s = +(+e.target.value).toFixed(2); syncParamUI(); schedule(40); };
-  $("#wwr-n").oninput = (e) => { S.wwr_n = +(+e.target.value).toFixed(2); syncParamUI(); schedule(40); };
   $("#btn-sample-params").onclick = () => { setParams(S.sample.params); schedule(0); };
   $("#chk-overlay").onchange = (e) => { S.overlay = e.target.checked; render(); };
   $("#chk-bubbles").onchange = (e) => { S.showBubbles = e.target.checked; render(); };
@@ -676,7 +759,7 @@ function wire() {
   };
   $("#btn-export").onclick = () => {
     if (!S.result) return;
-    const data = { ...S.result.graph, inputs: S.result.inputs, prediction: { model: S.result.model, unit: S.result.unit, rooms: S.result.rooms } };
+    const data = { ...S.result.graph, inputs: S.result.inputs, prediction: { region: S.result.region, model: S.result.model, unit: S.result.unit, rooms: S.result.rooms } };
     const a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: "application/json" }));
     a.download = "graph.json"; a.click(); URL.revokeObjectURL(a.href);
@@ -694,8 +777,8 @@ function wire() {
     S.meta = await (await fetch("/api/meta")).json();
   } catch { status("err", "server unreachable — run python app.py"); return; }
   S.types = S.meta.room_types;
-  wire(); pickType(0); syncParamUI(); updateBoundaryMeta(); renderAbout(); setTool("select");
+  wire(); renderRegion(); updateBoundaryMeta(); setTool("select");
   status("ok", "ready");
-  LIB = await (await fetch("/api/library")).json();
+  LIB = await (await fetch(`/api/library?region=${S.region}`)).json();
   loadSample(0);
 })();
