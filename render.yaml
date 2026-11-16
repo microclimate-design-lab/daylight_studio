@@ -1,0 +1,10 @@
+# Render Blueprint: one-click deploy of the web app on the free plan.
+#   https://render.com/deploy?repo=https://github.com/microclimate-design-lab/daylight_studio
+services:
+  - type: web
+    name: daylight-studio
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    autoDeploy: true

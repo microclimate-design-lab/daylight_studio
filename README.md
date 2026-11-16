@@ -8,8 +8,6 @@ MLP / XGBoost surrogates return the DA map, room-level sDA and layout-level sDA 
 boundary + bubbles (browser) ─► graph (dataset format) ─► window model ─► DA map · room sDA · layout sDA
 ```
 
-**Live demo:** https://huggingface.co/spaces/Yinerrr/daylight-studio (runs in the browser, nothing to install)
-
 New users: see **[HANDOVER.md](HANDOVER.md)** for installation, a walkthrough, limits and troubleshooting.
 HANDOVER.md was written for the first release (Shanghai, MLP / XGBoost); the GNN models and the Singapore
 dataset follow the same workflow.
@@ -30,8 +28,22 @@ docker build -t daylight-studio .
 docker run -p 7860:7860 daylight-studio
 ```
 
-Then open http://localhost:7860. The Space is deployed from this repository: `space/README.md` becomes the
-Space's README, `Dockerfile` + `requirements-space.txt` define the image.
+Then open http://localhost:7860.
+
+## Deploy (public web page)
+
+The Docker image runs **without PyTorch**: the MLP and GNN forward passes are re-implemented in NumPy
+(`nn_numpy.py`) from weights exported by `tools/export_numpy.py`, and XGBoost runs through its plain Booster.
+`tools/export_numpy.py --check` confirms the NumPy and PyTorch predictions agree (max difference ~1e-7 in sDA).
+The app then needs about 350 MB of memory, so it fits free hosting plans (512 MB).
+
+- **Render (free):** open https://render.com/deploy?repo=https://github.com/microclimate-design-lab/daylight_studio,
+  sign in, and apply the blueprint (`render.yaml`). Free instances sleep after 15 min without visitors;
+  the first request after that takes about a minute.
+- **Hugging Face Spaces:** `space/README.md` is the Space card; Docker Spaces need a PRO account.
+
+After retraining, re-run `python tools/export_numpy.py --check` (needs torch) and commit the new `*.npz` files.
+Locally, `DAYLIGHT_BACKEND=torch` switches back to the original PyTorch checkpoints.
 
 ## Use
 

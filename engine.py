@@ -51,37 +51,55 @@ MODEL_NAMES = tuple(dict.fromkeys(m for r in REGIONS.values() for m in r["models
 
 
 # ------------------------------------------------------------------------------------------- models
+class XGB:
+    """XGBoost model through the plain Booster (no scikit-learn import, less memory). Same output as the
+    XGBRegressor / XGBClassifier wrappers: uses best_iteration when the model was trained with early stopping."""
+
+    def __init__(self, path):
+        self.booster = xgb.Booster()
+        self.booster.load_model(str(path))
+        best = self.booster.attributes().get("best_iteration")
+        self.iters = (0, int(best) + 1) if best is not None else (0, 0)
+
+    def predict(self, X):
+        return self.booster.inplace_predict(np.asarray(X, np.float32), iteration_range=self.iters)
+
+    def predict_proba(self, X):
+        p = self.predict(X)
+        return np.column_stack([1 - p, p])
+
+
 class Models:
-    def __init__(self):
-        import torch
-        import gnn
-        torch.set_num_threads(max(1, (os.cpu_count() or 2) // 2))
-        self.torch = torch
+    """backend "numpy" (default, no torch needed; weights from tools/export_numpy.py) or "torch" (original checkpoints)."""
+
+    def __init__(self, backend=None):
+        self.backend = backend or os.environ.get("DAYLIGHT_BACKEND", "numpy")
+        if self.backend == "torch":
+            import torch
+            import gnn
+            torch.set_num_threads(max(1, (os.cpu_count() or 2) // 2))
+            self.torch = torch
+        else:
+            import nn_numpy as gnn
         self.lock = threading.Lock()
-        self.win = {}
-        for side in "NS":
-            c = xgb.XGBClassifier()
-            c.load_model(MODELS / f"window_{side}.json")
-            self.win[side] = c
+        self.win = {side: XGB(MODELS / f"window_{side}.json") for side in "NS"}
         self.gnn = {region: gnn.Ensemble(MODELS / "gnn" / region) for region in REGIONS}
         self.gnn_map = {region: gnn.MapEnsemble(MODELS / "gnn" / region) for region in REGIONS
                         if (MODELS / "gnn" / region / "map_spec.json").exists()}
-        self.sg_win = {}
-        for side in "NSEW":
-            c = xgb.XGBClassifier()
-            c.load_model(MODELS / "gnn" / "singapore" / f"window_{side}.json")
-            self.sg_win[side] = c
-        self.xgb = {}
-        for name in ["room_xgb_sda", "room_xgb_mean_illum", "unit_xgb_sda", "unit_xgb_mean_illum", "map_xgb"]:
-            m = xgb.XGBRegressor()
-            m.load_model(MODELS / f"{name}.json")
-            self.xgb[name] = m
+        self.sg_win = {side: XGB(MODELS / "gnn" / "singapore" / f"window_{side}.json") for side in "NSEW"}
+        self.xgb = {name: XGB(MODELS / f"{name}.json")
+                    for name in ["room_xgb_sda", "room_xgb_mean_illum", "unit_xgb_sda", "unit_xgb_mean_illum", "map_xgb"]}
         self.mlp, self.scaler = {}, {}
         for lvl in ["room", "unit", "map"]:
-            self.mlp[lvl] = torch.load(MODELS / f"{lvl}_mlp.pt", weights_only=False).eval()
-            self.scaler[lvl] = pickle.load(open(MODELS / f"{lvl}_scaler.pkl", "rb"))
+            if self.backend == "torch":
+                self.mlp[lvl] = self.torch.load(MODELS / f"{lvl}_mlp.pt", weights_only=False, map_location="cpu").eval()
+                self.scaler[lvl] = pickle.load(open(MODELS / f"{lvl}_scaler.pkl", "rb"))
+            else:
+                self.mlp[lvl] = gnn.MLP(MODELS / "np" / f"{lvl}_mlp.npz")
 
     def run_mlp(self, lvl, X):
+        if self.backend != "torch":
+            return self.mlp[lvl](X)
         with self.torch.no_grad():
             Xs = self.torch.tensor(self.scaler[lvl].transform(X), dtype=self.torch.float32)
             return self.mlp[lvl](Xs).numpy()

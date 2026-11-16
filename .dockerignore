@@ -10,3 +10,7 @@ venv/
 tools/
 space/
 HANDOVER.md
+# PyTorch checkpoints: the image uses the exported NumPy weights instead
+models/*.pt
+models/*.pkl
+models/gnn/*/*.pt
